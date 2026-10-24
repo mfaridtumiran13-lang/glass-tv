@@ -107,6 +107,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     /** The shelf's width in pixels, worked out once from the screen. */
     private int heroMaxWidth, heroNameMaxWidth;
     private View heroShelf;
+    /** Prayer times above the dock's right edge (config.json, prayer_zone); null when off. */
+    private TextView prayerStrip;
+    private String prayerZone = "";
+    private boolean prayerHasData, prayerFetching;
     private TextView heroName;
     private TextView heroDesc;
     private TextView heroWhere;
@@ -232,6 +236,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         public void run() {
             updateShamsiDate();
             updateWifiLabel();
+            updatePrayerStrip();
             refreshPlacesIfDue();
             handler.postDelayed(this, MINUTE_MS);
         }
@@ -289,6 +294,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         heroShelf.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
             if (heroBottom > 0) v.setY(heroBottom - v.getHeight());
         });
+        prayerZone = cfg.prayerZone;
+        if (!prayerZone.isEmpty()) setUpPrayerStrip();
         btnWifi = findViewById(R.id.btnWifi);
         if (!cfg.showNetworkPill) btnWifi.setVisibility(View.GONE);
         shamsiDate = findViewById(R.id.shamsiDate);
@@ -671,6 +678,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         updateShamsiDate();
         updateWifiLabel();
         updateInputsButton();
+        updatePrayerStrip();
         startWallpaperRotation();
         handler.postDelayed(minuteTick, MINUTE_MS);
         handler.removeCallbacks(cacheClean);
@@ -871,6 +879,89 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
     }
 
+    // ---- prayer times ----------------------------------------------------------------------------
+
+    /**
+     * The strip: a few right-aligned lines at the dock's right edge, level with the shelf's last line,
+     * so it comes and goes with the shelf and never meets its text, which keeps to the left 60%.
+     */
+    private void setUpPrayerStrip() {
+        TextView tv = new TextView(this);
+        tv.setTextColor(0xFFFFFFFF);
+        tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 18f);
+        tv.setGravity(android.view.Gravity.END);
+        tv.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_END);
+        tv.setLineSpacing(0f, 1.12f);
+        tv.setMaxWidth(Math.round(heroMaxWidth * 0.9f));
+        tv.setAlpha(0f);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.TOP | android.view.Gravity.END);
+        lp.rightMargin = (int) (56 * density);   // the screen's right padding, where the dock ends
+        int at = root.indexOfChild(heroShelf);
+        root.addView(tv, at >= 0 ? at + 1 : -1, lp);
+        // Hangs from its bottom edge, like the shelf, since its height follows its text.
+        tv.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
+            if (heroBottom > 0) v.setY(heroBottom - v.getHeight());
+        });
+        prayerStrip = tv;
+    }
+
+    /** Rewrites the strip from the saved times, and asks for new ones when they are due. */
+    private void updatePrayerStrip() {
+        if (prayerStrip == null) return;
+        long now = System.currentTimeMillis();
+        PrayerTimes.Schedule schedule = PrayerTimes.load(this, prayerZone);
+        PrayerTimes.Next next = schedule != null ? PrayerTimes.next(schedule, now) : null;
+        if (next == null) {
+            prayerHasData = false;
+            prayerStrip.setAlpha(0f);
+            refreshPrayerIfDue();
+            return;
+        }
+        prayerHasData = true;
+        boolean h24 = android.text.format.DateFormat.is24HourFormat(this);
+        android.text.SpannableStringBuilder b = new android.text.SpannableStringBuilder();
+        append(b, "WAKTU SOLAT", 0.62f, 0x99FFFFFF, false);
+        b.append('\n');
+        append(b, next.name() + " " + PrayerTimes.clock(next.minutes(), h24, true), 1.6f, 0xFFFFFFFF, true);
+        b.append('\n');
+        append(b, "dalam " + PrayerTimes.countdown(next.atMs - now), 0.9f, 0xCCFFFFFF, false);
+        b.append('\n');
+        StringBuilder all = new StringBuilder();
+        for (int i = 0; i < PrayerTimes.NAMES.length; i++) {
+            if (i > 0) all.append("  \u00B7  ");
+            all.append(PrayerTimes.NAMES[i]).append(' ').append(PrayerTimes.clock(next.times[i], h24, false));
+        }
+        append(b, all.toString(), 0.7f, 0x99FFFFFF, false);
+        prayerStrip.setText(b);
+        if (heroShown) prayerStrip.setAlpha(1f);
+        refreshPrayerIfDue();
+    }
+
+    private static void append(android.text.SpannableStringBuilder b, String text, float size, int color, boolean bold) {
+        int from = b.length();
+        b.append(text);
+        int to = b.length();
+        b.setSpan(new android.text.style.RelativeSizeSpan(size), from, to, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        b.setSpan(new android.text.style.ForegroundColorSpan(color), from, to, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (bold) b.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), from, to,
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    }
+
+    /** Fetches new days in the background when they are due, then redraws the strip. */
+    private void refreshPrayerIfDue() {
+        if (prayerStrip == null || prayerFetching || !PrayerTimes.due(this, prayerZone)) return;
+        prayerFetching = true;
+        final String zone = prayerZone;
+        new Thread(() -> {
+            PrayerTimes.refresh(getApplicationContext(), zone);
+            handler.post(() -> {
+                prayerFetching = false;
+                if (!isDestroyed()) updatePrayerStrip();
+            });
+        }, "prayer-times").start();
+    }
+
     // ---- top shelf -------------------------------------------------------------------------------
 
     private void showHero(int position, float dockTopInRoot) {
@@ -882,6 +973,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         int color = adapter.ambientColorAt(position);
         heroBottom = dockTopInRoot - HERO_GAP_DP * density;
         float y = heroBottom - heroShelf.getHeight();
+        if (prayerStrip != null) {
+            prayerStrip.setY(heroBottom - prayerStrip.getHeight());
+            if (prayerHasData) {
+                if (reducedMotion) prayerStrip.setAlpha(1f);
+                else prayerStrip.animate().alpha(1f).setDuration(260).start();
+            }
+        }
         boolean changed = !label.contentEquals(heroName.getText());
 
         if (reducedMotion) {
@@ -1224,6 +1322,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (!heroShown) return;
         heroShown = false;
         heroShelf.animate().alpha(0f).setDuration(reducedMotion ? 100 : 160).start();
+        if (prayerStrip != null) prayerStrip.animate().alpha(0f).setDuration(reducedMotion ? 100 : 160).start();
     }
 
     /**

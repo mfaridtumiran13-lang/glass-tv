@@ -62,6 +62,8 @@ final class Config {
     final long wallpaperIntervalMs;
     /** Pictures of places to visit, renewed weekly (see PlaceWallpapers); "places": false keeps them off. */
     final boolean places;
+    /** JAKIM zone code for the prayer-times strip above the dock (config.json, prayer_zone), e.g. "WLY01"; empty for off. */
+    final String prayerZone;
     /** Days between clearing the TV's app caches (see CacheCleaner); 0 never does. */
     final int cacheCleanDays;
     /** Whether the overlay file was present and parsed. */
@@ -74,7 +76,7 @@ final class Config {
                    boolean showHomeSettingsShortcut, boolean showNetworkPill, boolean showLiveTv,
                    int backgroundColor,
                    File wallpaper, List<File> wallpapers, long wallpaperIntervalMs,
-                   boolean places, int cacheCleanDays, boolean overlayApplied) {
+                   boolean places, int cacheCleanDays, String prayerZone, boolean overlayApplied) {
         this.dockApps = Collections.unmodifiableList(dockApps);
         this.hiddenApps = Collections.unmodifiableList(hiddenApps);
         this.liveTvPackage = liveTvPackage;
@@ -97,6 +99,7 @@ final class Config {
         this.wallpaperIntervalMs = wallpaperIntervalMs;
         this.places = places;
         this.cacheCleanDays = cacheCleanDays;
+        this.prayerZone = prayerZone;
         this.overlayApplied = overlayApplied;
     }
 
@@ -171,10 +174,13 @@ final class Config {
         int cacheCleanDays = json != null ? integer(json, "cache_clean_days", CacheCleaner.DEFAULT_DAYS, 0, 90)
                 : CacheCleaner.DEFAULT_DAYS;
 
+        // Off unless a theme names a zone: the strip needs the network, so it never starts by itself.
+        String prayerZone = json != null ? zoneCode(json, "prayer_zone") : "";
+
         return new Config(dock, hidden, liveTv, liveTvAction, panelService, panelAction, inputAction,
                 Math.max(1, columns), Math.max(0, rowsBelow), shamsi, moduleCards, reducedMotion,
                 vpn, homeSettings, networkPill, liveTvRow, background, wallpaper, wallpapers, wallpaperIntervalMs,
-                places, cacheCleanDays, applied);
+                places, cacheCleanDays, prayerZone, applied);
     }
 
     /** Reads and parses the overlay; any problem means "no overlay", never a crash on the home screen. */
@@ -200,6 +206,14 @@ final class Config {
     private static String string(JSONObject o, String key, String fallback) {
         Object v = o.opt(key);
         return v instanceof String ? ((String) v).trim() : fallback;
+    }
+
+    /** A JAKIM zone code such as "WLY01" (three letters, two digits), upper-cased; empty when it is not one. */
+    private static String zoneCode(JSONObject o, String key) {
+        Object v = o.opt(key);
+        if (!(v instanceof String)) return "";
+        String z = ((String) v).trim().toUpperCase(java.util.Locale.ROOT);
+        return z.matches("[A-Z]{3}[0-9]{2}") ? z : "";
     }
 
     private static boolean bool(JSONObject o, String key, boolean fallback) {
